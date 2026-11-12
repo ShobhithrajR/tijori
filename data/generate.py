@@ -60,6 +60,46 @@ DOMAINS = ("gmail.com", "yahoo.in", "outlook.com", "example.co.in", "hotmail.com
 
 AADHAAR_STYLES = ("plain", "spaces", "hyphens")
 
+# Verhoeff tables used by UIDAI's Aadhaar check digit.
+_VERHOEFF_D = (
+    (0, 1, 2, 3, 4, 5, 6, 7, 8, 9),
+    (1, 2, 3, 4, 0, 6, 7, 8, 9, 5),
+    (2, 3, 4, 0, 1, 7, 8, 9, 5, 6),
+    (3, 4, 0, 1, 2, 8, 9, 5, 6, 7),
+    (4, 0, 1, 2, 3, 9, 5, 6, 7, 8),
+    (5, 9, 8, 7, 6, 0, 4, 3, 2, 1),
+    (6, 5, 9, 8, 7, 1, 0, 4, 3, 2),
+    (7, 6, 5, 9, 8, 2, 1, 0, 4, 3),
+    (8, 7, 6, 5, 9, 3, 2, 1, 0, 4),
+    (9, 8, 7, 6, 5, 4, 3, 2, 1, 0),
+)
+_VERHOEFF_P = (
+    (0, 1, 2, 3, 4, 5, 6, 7, 8, 9),
+    (1, 5, 7, 6, 2, 8, 3, 0, 9, 4),
+    (5, 8, 0, 3, 7, 9, 6, 1, 4, 2),
+    (8, 9, 1, 6, 0, 4, 3, 5, 2, 7),
+    (9, 4, 5, 3, 1, 2, 6, 8, 7, 0),
+    (4, 2, 8, 6, 5, 7, 3, 9, 0, 1),
+    (2, 7, 9, 3, 8, 0, 6, 4, 1, 5),
+    (7, 0, 4, 6, 9, 1, 3, 2, 5, 8),
+)
+_VERHOEFF_INV = (0, 4, 3, 2, 1, 5, 6, 7, 8, 9)
+
+
+def verhoeff_checksum(digits: str) -> str:
+    """Return the check digit that makes ``digits + check`` Verhoeff-valid."""
+    checksum = 0
+    for index, char in enumerate(reversed(digits)):
+        checksum = _VERHOEFF_D[checksum][_VERHOEFF_P[(index + 1) % 8][int(char)]]
+    return str(_VERHOEFF_INV[checksum])
+
+
+def verhoeff_valid(number: str) -> bool:
+    checksum = 0
+    for index, char in enumerate(reversed(number)):
+        checksum = _VERHOEFF_D[checksum][_VERHOEFF_P[index % 8][int(char)]]
+    return checksum == 0
+
 
 def gstin_checksum(body: str) -> str:
     """Return the 15th GSTIN character for a 14-character body."""
@@ -88,7 +128,13 @@ def person_value(rng: random.Random) -> str:
 
 
 def aadhaar_value(rng: random.Random) -> str:
-    digits = str(rng.randint(2, 9)) + "".join(str(rng.randint(0, 9)) for _ in range(11))
+    # 11 random digits (first 2-9) + Verhoeff check digit; UIDAI rejects
+    # palindromic numbers, so regenerate those.
+    while True:
+        body = str(rng.randint(2, 9)) + "".join(str(rng.randint(0, 9)) for _ in range(10))
+        digits = body + verhoeff_checksum(body)
+        if digits != digits[::-1]:
+            break
     style = rng.choice(AADHAAR_STYLES)
     if style == "spaces":
         return f"{digits[:4]} {digits[4:8]} {digits[8:]}"

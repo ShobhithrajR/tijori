@@ -37,6 +37,38 @@ def luhn_ok(number: str) -> bool:
     return total % 10 == 0
 
 
+VERHOEFF_D = (
+    (0, 1, 2, 3, 4, 5, 6, 7, 8, 9),
+    (1, 2, 3, 4, 0, 6, 7, 8, 9, 5),
+    (2, 3, 4, 0, 1, 7, 8, 9, 5, 6),
+    (3, 4, 0, 1, 2, 8, 9, 5, 6, 7),
+    (4, 0, 1, 2, 3, 9, 5, 6, 7, 8),
+    (5, 9, 8, 7, 6, 0, 4, 3, 2, 1),
+    (6, 5, 9, 8, 7, 1, 0, 4, 3, 2),
+    (7, 6, 5, 9, 8, 2, 1, 0, 4, 3),
+    (8, 7, 6, 5, 9, 3, 2, 1, 0, 4),
+    (9, 8, 7, 6, 5, 4, 3, 2, 1, 0),
+)
+VERHOEFF_P = (
+    (0, 1, 2, 3, 4, 5, 6, 7, 8, 9),
+    (1, 5, 7, 6, 2, 8, 3, 0, 9, 4),
+    (5, 8, 0, 3, 7, 9, 6, 1, 4, 2),
+    (8, 9, 1, 6, 0, 4, 3, 5, 2, 7),
+    (9, 4, 5, 3, 1, 2, 6, 8, 7, 0),
+    (4, 2, 8, 6, 5, 7, 3, 9, 0, 1),
+    (2, 7, 9, 3, 8, 0, 6, 4, 1, 5),
+    (7, 0, 4, 6, 9, 1, 3, 2, 5, 8),
+)
+
+
+def verhoeff_valid(number: str) -> bool:
+    """Independent Verhoeff check (does not reuse the generator's tables)."""
+    checksum = 0
+    for index, char in enumerate(reversed(number)):
+        checksum = VERHOEFF_D[checksum][VERHOEFF_P[index % 8][int(char)]]
+    return checksum == 0
+
+
 def test_file_is_committed_and_matches_generator(docs):
     assert docs == generate.build_documents(), "data/dataset.jsonl is stale; rerun python -m data.generate"
 
@@ -81,7 +113,11 @@ def test_indian_formats(docs):
             value = entity["text"]
             entity_type = entity["type"]
             if entity_type == "AADHAAR":
-                assert len(re.sub(r"[\s-]", "", value)) == 12
+                digits = re.sub(r"[\s-]", "", value)
+                assert len(digits) == 12
+                assert digits[0] in "23456789", value
+                assert verhoeff_valid(digits), value
+                assert digits != digits[::-1], value
             elif entity_type == "PAN":
                 assert re.fullmatch(r"[A-Z]{5}[0-9]{4}[A-Z]", value), value
             elif entity_type == "GSTIN":
@@ -113,3 +149,23 @@ def test_indian_formats(docs):
 
 def test_generator_is_deterministic():
     assert generate.build_documents() == generate.build_documents()
+
+
+def test_verhoeff_known_vector():
+    # Wikipedia's worked example: check digit for 236 is 3.
+    assert generate.verhoeff_checksum("236") == "3"
+    assert verhoeff_valid("2363")
+
+
+def test_every_aadhaar_is_verhoeff_valid_and_non_palindrome(docs):
+    values = [
+        entity["text"]
+        for doc in docs
+        for entity in doc["entities"]
+        if entity["type"] == "AADHAAR"
+    ]
+    assert len(values) >= 10
+    for value in values:
+        digits = re.sub(r"[\s-]", "", value)
+        assert verhoeff_valid(digits), f"invalid Verhoeff check digit: {value}"
+        assert digits != digits[::-1], f"palindromic Aadhaar: {value}"
