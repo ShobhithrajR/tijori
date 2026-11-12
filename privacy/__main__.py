@@ -25,7 +25,7 @@ SAMPLE = (
 )
 
 #: Simulated LLM reply — placeholders reordered and one dropped.
-SIMULATED_LLM_REPLY = "Sure — <AADHAAR_1> and <PAN_1> verified for the holder."
+SIMULATED_LLM_REPLY = "Sure - <AADHAAR_1> and <PAN_1> verified for the holder."
 
 
 def _run_dataset_sweep() -> int:
@@ -99,7 +99,7 @@ def _run_dataset_sweep() -> int:
 
 def main(argv: list[str] | None = None) -> int:
     if argv is None:
-        argv = sys.argv[1:]
+        argv = []
 
     parser = argparse.ArgumentParser(description="Tijori Privacy CLI")
     parser.add_argument("--dataset", action="store_true", help="Run dataset sweep summary")
@@ -123,4 +123,4 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main(sys.argv[1:]))
