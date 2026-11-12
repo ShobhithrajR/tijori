@@ -1,47 +1,311 @@
-"""Streamlit demo shell (lane 3 owns this file).
+"""Tijori demo UI (lane 3).
 
-Spine state: three-pane layout, not wired to the API yet.
-Lane 3 replaces the placeholders with real /v1/sanitize and /v1/process calls.
+Talks only to the frozen HTTP contract in CONTRACT.md section 4:
+
+    GET  /health
+    POST /v1/process
+    GET  /v1/audit?limit=20
+
+Run with ``streamlit run ui/app.py``. The API base URL defaults to
+``TIJORI_API_URL`` or http://127.0.0.1:8000.
 """
 
 from __future__ import annotations
 
+import json
 import os
+import re
+from collections import Counter
+from pathlib import Path
 
+import httpx
 import streamlit as st
 
-API_URL = os.getenv("TIJORI_API_URL", "http://127.0.0.1:8000")
+ROOT = Path(__file__).resolve().parents[1]
+DATASET_PATH = ROOT / "data" / "dataset.jsonl"
+DEFAULT_API_URL = os.getenv("TIJORI_API_URL", "http://127.0.0.1:8000")
+DOC_TYPES = ("kyc", "loan_application", "support_ticket", "insurance_claim", "other")
+
+FALLBACK_SAMPLE = (
+    "My name is Rahul Sharma. My Aadhaar number is 1234-5678-9012 "
+    "and my PAN is ABCDE1234F. Mobile: +91 98765 43210."
+)
+
+
+@st.cache_data(show_spinner=False)
+def load_samples() -> list[dict]:
+    try:
+        lines = DATASET_PATH.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    return [json.loads(line) for line in lines if line.strip()]
+
+
+def probe(api_url: str) -> tuple[bool, dict]:
+    try:
+        response = httpx.get(f"{api_url}/health", timeout=1.0)
+        payload = response.json()
+        if response.status_code == 200 and isinstance(payload, dict):
+            return True, payload
+    except Exception:  # noqa: BLE001 - any network error means offline
+        pass
+    return False, {}
+
+
+def leakage_findings(text: str, entities: list[dict], outbound: str) -> list[dict]:
+    """Raw originals that survived into the outbound payload."""
+    findings: list[dict] = []
+    lowered = outbound.casefold()
+    for entity in entities:
+        try:
+            start, end = int(entity.get("start", 0)), int(entity.get("end", 0))
+        except (TypeError, ValueError):
+            continue
+        if start < 0 or end <= start or start >= len(text):
+            continue
+        original = text[start:end]
+        if not original:
+            continue
+        variants = {original}
+        if entity.get("type") == "AADHAAR":
+            variants.add(re.sub(r"[\s-]", "", original))
+        for variant in variants:
+            if not variant:
+                continue
+            hit = variant in outbound if variant.isdigit() else variant.casefold() in lowered
+            if hit:
+                findings.append({"type": entity.get("type"), "value": variant})
+    return findings
+
+
+def audit_rows(payload) -> list[dict]:
+    if isinstance(payload, list):
+        return payload
+    if isinstance(payload, dict):
+        for value in payload.values():
+            if isinstance(value, list):
+                return value
+    return []
+
+
+def clear_result() -> None:
+    """A stale result must never be shown against edited text."""
+    st.session_state.pop("result", None)
+    st.session_state.pop("error", None)
+
+
+def show_result(result: dict, submitted_text: str) -> None:
+    entities = [e for e in (result.get("entities") or []) if isinstance(e, dict)]
+    outbound = result.get("outbound_payload") or ""
+
+    left, middle, right = st.columns(3)
+
+    with left:
+        st.subheader("A. Original input")
+        st.text_area(
+            "Original document",
+            key="original_text",
+            height=360,
+            label_visibility="collapsed",
+            on_change=clear_result,
+        )
+        st.caption(
+            f"{len(submitted_text)} characters · doc type: "
+            f"{st.session_state.get('result_doc_type', '—')} · task: "
+            f"{st.session_state.get('result_task', '—')}"
+        )
+
+    with middle:
+        st.subheader("B. Outbound sanitized payload")
+        st.code(outbound or "(empty payload)", language="text")
+        if entities:
+            st.dataframe(
+                [
+                    {
+                        "Type": e.get("type"),
+                        "Placeholder": e.get("placeholder"),
+                        "Span": f"{e.get('start')}:{e.get('end')}",
+                    }
+                    for e in entities
+                ],
+                hide_index=True,
+                use_container_width=True,
+            )
+            counts = Counter(e.get("placeholder") for e in entities)
+            st.caption(
+                "Placeholder counts: "
+                + ", ".join(f"{placeholder} ×{count}" for placeholder, count in counts.items())
+            )
+        else:
+            st.info("No PII detected in this document.")
+
+        findings = leakage_findings(submitted_text, entities, outbound)
+        if findings:
+            detail = ", ".join(f"{f['type']}={f['value']}" for f in findings[:5])
+            st.error(f"Leakage: {len(findings)} raw value(s) found in outbound payload — {detail}")
+        else:
+            st.success("No raw PII in outbound payload")
+
+    with right:
+        st.subheader("C. Final response")
+        st.text_area(
+            "Final text",
+            value=result.get("final_text") or "",
+            height=360,
+            disabled=True,
+            label_visibility="collapsed",
+        )
+        reinsertion = result.get("reinsertion")
+        if not isinstance(reinsertion, dict):
+            reinsertion = {}
+        stats = st.columns(3)
+        stats[0].metric("Replaced", reinsertion.get("replaced", 0))
+        stats[1].metric("Missing", len(reinsertion.get("missing") or []))
+        stats[2].metric("Unknown", len(reinsertion.get("unknown") or []))
+        st.caption(
+            f"Provider: {result.get('provider', '—')} · model: {result.get('model', '—')} · "
+            f"gateway latency: {result.get('latency_ms', 0)} ms"
+        )
+        with st.expander("Reinsertion detail"):
+            st.json(reinsertion)
+
 
 st.set_page_config(page_title="Tijori — DPDP Privacy Gateway", layout="wide")
 st.title("Tijori — DPDP Privacy Gateway")
 st.caption("Detect the sensitive. Mask the personal. Process securely. Restore locally.")
 
+samples = load_samples()
+sample_by_id = {doc["id"]: doc for doc in samples}
+
+if "original_text" not in st.session_state:
+    st.session_state.original_text = samples[0]["text"] if samples else FALLBACK_SAMPLE
+if "doc_type" not in st.session_state:
+    st.session_state.doc_type = samples[0]["doc_type"] if samples else "kyc"
+if "task" not in st.session_state:
+    st.session_state.task = "summarize"
+
 with st.sidebar:
     st.subheader("Gateway")
-    st.code(API_URL)
-    doc_type = st.selectbox("Document type", ["kyc", "loan_application", "support_ticket", "insurance_claim"])
-    task = st.selectbox("Task", ["summarize", "extract"])
-    st.caption("Lane 3: wire these to POST /v1/process.")
+    api_url = st.text_input("API URL", value=DEFAULT_API_URL, key="api_url").rstrip("/")
+    online, health = probe(api_url)
+    if online:
+        st.success(f"API online — {health.get('provider', '?')} / {health.get('model', '?')}")
+    else:
+        st.error(f"API offline at {api_url}")
 
-sample = (
-    "My name is Rahul Sharma. My Aadhaar number is 1234-5678-9012 "
-    "and my PAN is ABCDE1234F."
-)
+    st.subheader("Document")
+    if sample_by_id:
+        sample_id = st.selectbox("Sample document", sorted(sample_by_id))
+        if st.button("Load sample", use_container_width=True):
+            sample = sample_by_id[sample_id]
+            st.session_state.original_text = sample["text"]
+            st.session_state.doc_type = sample["doc_type"]
+            st.session_state.pop("result", None)
+    else:
+        st.caption("data/dataset.jsonl not found — using the built-in sample.")
 
-left, middle, right = st.columns(3)
+    st.selectbox("Document type", DOC_TYPES, key="doc_type")
+    st.selectbox("Task", ("summarize", "extract"), key="task")
 
-with left:
-    st.subheader("A. Original input")
-    text = st.text_area("Document", value=sample, height=320, label_visibility="collapsed")
+    st.divider()
+    run = st.button("Run gateway", type="primary", use_container_width=True, disabled=not online)
+    st.caption("POST /v1/process on the sanitized document.")
 
-with middle:
-    st.subheader("B. Outbound sanitized payload")
-    st.code("Not processed yet — call /v1/process.", language="text")
-    st.warning("Leakage check: pending")
+if run:
+    submitted = (st.session_state.get("original_text") or "").strip()
+    st.session_state.pop("error", None)
+    if not submitted:
+        st.session_state.error = "Enter a document before running."
+    else:
+        request = {
+            "text": st.session_state.original_text,
+            "doc_type": st.session_state.doc_type,
+            "task": st.session_state.task,
+            "purpose": "general",
+        }
+        with st.spinner("Gateway is sanitizing and calling the LLM…"):
+            try:
+                response = httpx.post(f"{api_url}/v1/process", json=request, timeout=180)
+                response.raise_for_status()
+                payload = response.json()
+                if not isinstance(payload, dict):
+                    raise ValueError("gateway returned a non-object JSON response")
+                st.session_state.result = payload
+                st.session_state.result_text = request["text"]
+                st.session_state.result_doc_type = request["doc_type"]
+                st.session_state.result_task = request["task"]
+            except httpx.HTTPStatusError as exc:
+                st.session_state.pop("result", None)
+                st.session_state.error = (
+                    f"Gateway returned {exc.response.status_code}: {exc.response.text[:500]}"
+                )
+            except Exception as exc:  # noqa: BLE001 - never crash the demo
+                st.session_state.pop("result", None)
+                st.session_state.error = f"Could not reach the gateway at {api_url}: {exc}"
 
-with right:
-    st.subheader("C. Final response")
-    st.info("Reinserted response will appear here.")
+if st.session_state.get("error"):
+    st.error(st.session_state.error)
+
+demo_tab, audit_tab = st.tabs(["Gateway demo", "Audit browser"])
+
+with demo_tab:
+    result = st.session_state.get("result")
+    if result:
+        show_result(result, st.session_state.get("result_text", ""))
+    else:
+        left, middle, right = st.columns(3)
+        with left:
+            st.subheader("A. Original input")
+            st.text_area(
+                "Original document",
+                key="original_text",
+                height=360,
+                label_visibility="collapsed",
+                on_change=clear_result,
+            )
+        with middle:
+            st.subheader("B. Outbound sanitized payload")
+            st.code("Not processed yet — click Run gateway.", language="text")
+            if not online:
+                st.warning("API offline. Start uvicorn app.main:app, then reload this page.")
+        with right:
+            st.subheader("C. Final response")
+            st.info("The reinserted response will appear here.")
+
+with audit_tab:
+    st.subheader("Recent audit records")
+    if not online:
+        st.info("API offline — audit history is unavailable.")
+    else:
+        try:
+            response = httpx.get(f"{api_url}/v1/audit", params={"limit": 20}, timeout=10)
+            response.raise_for_status()
+            rows = audit_rows(response.json())
+            rows = [row for row in rows if isinstance(row, dict)]
+            if rows:
+                st.dataframe(
+                    [
+                        {
+                            "time": row.get("created_at"),
+                            "doc_type": row.get("doc_type"),
+                            "entities": ", ".join(
+                                f"{key}:{value}"
+                                for key, value in (row.get("entity_counts") or {}).items()
+                            ),
+                            "provider/model": f"{row.get('provider', '')}/{row.get('model', '')}",
+                            "latency_ms": row.get("latency_ms"),
+                            "leakage": row.get("leakage_count", 0),
+                            "status": row.get("status"),
+                        }
+                        for row in rows
+                    ],
+                    hide_index=True,
+                    use_container_width=True,
+                )
+            else:
+                st.info("No audit records yet.")
+        except Exception as exc:  # noqa: BLE001
+            st.info(f"Audit browser unavailable: {exc}")
 
 st.divider()
-st.caption("Audit browser and latency panel: lane 3.")
+st.caption("Raw PII never leaves the gateway. Placeholders are restored locally.")
