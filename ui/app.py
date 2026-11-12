@@ -25,6 +25,11 @@ ROOT = Path(__file__).resolve().parents[1]
 DATASET_PATH = ROOT / "data" / "dataset.jsonl"
 DEFAULT_API_URL = os.getenv("TIJORI_API_URL", "http://127.0.0.1:8000")
 DOC_TYPES = ("kyc", "loan_application", "support_ticket", "insurance_claim", "other")
+DEFAULT_INSTRUCTION = (
+    "Summarize this document in 3 short bullet points.\n"
+    "Do not copy the document. Keep every placeholder like <PERSON_1> exactly as written."
+)
+AUTH_ERROR = "Gateway rejected the API key (check TIJORI_API_KEY)"
 
 FALLBACK_SAMPLE = (
     "My name is Rahul Sharma. My Aadhaar number is 1234-5678-9012 "
@@ -50,6 +55,17 @@ def probe(api_url: str) -> tuple[bool, dict]:
     except Exception:  # noqa: BLE001 - any network error means offline
         pass
     return False, {}
+
+
+def auth_headers() -> dict[str, str]:
+    """X-API-Key only when TIJORI_API_KEY is set; never expose the key elsewhere."""
+    key = os.getenv("TIJORI_API_KEY", "").strip()
+    return {"X-API-Key": key} if key else {}
+
+
+def short(text: str, limit: int = 80) -> str:
+    text = " ".join(text.split())
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
 
 def leakage_findings(text: str, entities: list[dict], outbound: str) -> list[dict]:
@@ -94,7 +110,7 @@ def clear_result() -> None:
     st.session_state.pop("error", None)
 
 
-def show_result(result: dict, submitted_text: str) -> None:
+def show_result(result: dict, submitted_text: str, instruction: str) -> None:
     entities = [e for e in (result.get("entities") or []) if isinstance(e, dict)]
     outbound = result.get("outbound_payload") or ""
 
@@ -114,6 +130,7 @@ def show_result(result: dict, submitted_text: str) -> None:
             f"{st.session_state.get('result_doc_type', '—')} · task: "
             f"{st.session_state.get('result_task', '—')}"
         )
+        st.caption(f"Instruction sent: {short(instruction) if instruction else '—'}")
 
     with middle:
         st.subheader("B. Outbound sanitized payload")
@@ -183,6 +200,8 @@ if "doc_type" not in st.session_state:
     st.session_state.doc_type = samples[0]["doc_type"] if samples else "kyc"
 if "task" not in st.session_state:
     st.session_state.task = "summarize"
+if "instruction" not in st.session_state:
+    st.session_state.instruction = DEFAULT_INSTRUCTION
 
 with st.sidebar:
     st.subheader("Gateway")
@@ -206,6 +225,13 @@ with st.sidebar:
 
     st.selectbox("Document type", DOC_TYPES, key="doc_type")
     st.selectbox("Task", ("summarize", "extract"), key="task")
+    st.text_area(
+        "Instruction",
+        key="instruction",
+        height=120,
+        help="Optional. Sent as instruction on POST /v1/process.",
+        on_change=clear_result,
+    )
 
     st.divider()
     run = st.button("Run gateway", type="primary", use_container_width=True, disabled=not online)
@@ -213,6 +239,7 @@ with st.sidebar:
 
 if run:
     submitted = (st.session_state.get("original_text") or "").strip()
+    instruction = (st.session_state.get("instruction") or "").strip()
     st.session_state.pop("error", None)
     if not submitted:
         st.session_state.error = "Enter a document before running."
@@ -223,9 +250,16 @@ if run:
             "task": st.session_state.task,
             "purpose": "general",
         }
+        if instruction:
+            request["instruction"] = instruction
         with st.spinner("Gateway is sanitizing and calling the LLM…"):
             try:
-                response = httpx.post(f"{api_url}/v1/process", json=request, timeout=180)
+                response = httpx.post(
+                    f"{api_url}/v1/process",
+                    json=request,
+                    headers=auth_headers(),
+                    timeout=180,
+                )
                 response.raise_for_status()
                 payload = response.json()
                 if not isinstance(payload, dict):
@@ -234,11 +268,15 @@ if run:
                 st.session_state.result_text = request["text"]
                 st.session_state.result_doc_type = request["doc_type"]
                 st.session_state.result_task = request["task"]
+                st.session_state.result_instruction = instruction
             except httpx.HTTPStatusError as exc:
                 st.session_state.pop("result", None)
-                st.session_state.error = (
-                    f"Gateway returned {exc.response.status_code}: {exc.response.text[:500]}"
-                )
+                if exc.response.status_code == 401:
+                    st.session_state.error = AUTH_ERROR
+                else:
+                    st.session_state.error = (
+                        f"Gateway returned {exc.response.status_code}: {exc.response.text[:500]}"
+                    )
             except Exception as exc:  # noqa: BLE001 - never crash the demo
                 st.session_state.pop("result", None)
                 st.session_state.error = f"Could not reach the gateway at {api_url}: {exc}"
@@ -251,7 +289,11 @@ demo_tab, audit_tab = st.tabs(["Gateway demo", "Audit browser"])
 with demo_tab:
     result = st.session_state.get("result")
     if result:
-        show_result(result, st.session_state.get("result_text", ""))
+        show_result(
+            result,
+            st.session_state.get("result_text", ""),
+            st.session_state.get("result_instruction", ""),
+        )
     else:
         left, middle, right = st.columns(3)
         with left:
@@ -278,32 +320,45 @@ with audit_tab:
         st.info("API offline — audit history is unavailable.")
     else:
         try:
-            response = httpx.get(f"{api_url}/v1/audit", params={"limit": 20}, timeout=10)
-            response.raise_for_status()
-            rows = audit_rows(response.json())
-            rows = [row for row in rows if isinstance(row, dict)]
-            if rows:
-                st.dataframe(
-                    [
-                        {
-                            "time": row.get("created_at"),
-                            "doc_type": row.get("doc_type"),
-                            "entities": ", ".join(
-                                f"{key}:{value}"
-                                for key, value in (row.get("entity_counts") or {}).items()
-                            ),
-                            "provider/model": f"{row.get('provider', '')}/{row.get('model', '')}",
-                            "latency_ms": row.get("latency_ms"),
-                            "leakage": row.get("leakage_count", 0),
-                            "status": row.get("status"),
-                        }
-                        for row in rows
-                    ],
-                    hide_index=True,
-                    use_container_width=True,
-                )
+            response = httpx.get(
+                f"{api_url}/v1/audit",
+                params={"limit": 20},
+                headers=auth_headers(),
+                timeout=10,
+            )
+            if response.status_code == 401:
+                st.info(AUTH_ERROR)
             else:
-                st.info("No audit records yet.")
+                response.raise_for_status()
+                rows = audit_rows(response.json())
+                rows = [row for row in rows if isinstance(row, dict)]
+                if rows:
+                    st.dataframe(
+                        [
+                            {
+                                "time": row.get("created_at"),
+                                "doc_type": row.get("doc_type"),
+                                "entities": ", ".join(
+                                    f"{key}:{value}"
+                                    for key, value in (row.get("entity_counts") or {}).items()
+                                ),
+                                "provider/model": f"{row.get('provider', '')}/{row.get('model', '')}",
+                                "latency_ms": row.get("latency_ms"),
+                                "leakage": row.get("leakage_count", 0),
+                                "status": row.get("status"),
+                            }
+                            for row in rows
+                        ],
+                        hide_index=True,
+                        use_container_width=True,
+                    )
+                else:
+                    st.info("No audit records yet.")
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 401:
+                st.info(AUTH_ERROR)
+            else:
+                st.info(f"Audit browser unavailable: {exc}")
         except Exception as exc:  # noqa: BLE001
             st.info(f"Audit browser unavailable: {exc}")
 
