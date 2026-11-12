@@ -1,0 +1,33 @@
+# Environment & secrets
+.venv/
+.env
+*.key
+*.pem
+
+# Large / machine-local assets (never commit)
+offline_bundle/
+models/
+.cache/
+~/.ollama/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Runtime data
+data/*.db
+data/*.db-journal
+data/*.sqlite*
+*.log
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Streamlit
+.streamlit/secrets.toml

@@ -1,0 +1,14 @@
+[project]
+name = "tijori"
+version = "0.1.0"
+description = "DPDP-ready privacy gateway for enterprise LLMs"
+requires-python = ">=3.10"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q"
+timeout = 120
+markers = [
+    "slow: tests that load ML models",
+]
