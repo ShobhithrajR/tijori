@@ -18,11 +18,13 @@ Exit codes: 0 = report written and leakage is zero, 1 = leakage found,
 
 from __future__ import annotations
 
+import asyncio
 import json
 import math
 import os
 import re
 import subprocess
+import time
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -35,6 +37,7 @@ REPORT_PATH = ROOT / "reports" / "metrics.md"
 DATASET_SEED = 2026
 DEFAULT_API_URL = os.getenv("TIJORI_API_URL", "http://127.0.0.1:8000")
 PROCESS_DOC_IDS = ("loan_001", "kyc_002", "support_003", "insurance_004", "loan_005")
+PROCESS_INSTRUCTION = "Summarize in 3 bullet points and keep all placeholders."
 
 
 # ---------------------------------------------------------------------------
@@ -166,6 +169,7 @@ def evaluate(docs: list[dict], catch_all: str) -> tuple[int, str]:
     leaks: list[dict] = []
     sanitize_failures: list[str] = []
     sanitize_latencies: list[int] = []
+    sanitized_by_id: dict[str, str] = {}
     processed: list[dict] = []
 
     with httpx.Client(base_url=catch_all, timeout=60.0) as client:
@@ -194,6 +198,7 @@ def evaluate(docs: list[dict], catch_all: str) -> tuple[int, str]:
             bucket[2] += totals["fn"]
 
             sanitized = payload.get("sanitized_text", "")
+            sanitized_by_id[doc["id"]] = sanitized
             for entity in doc["entities"]:
                 count = leak_occurrences(entity, sanitized)
                 if count:
@@ -214,7 +219,7 @@ def evaluate(docs: list[dict], catch_all: str) -> tuple[int, str]:
                         "doc_type": doc["doc_type"],
                         "purpose": "general",
                         "task": "summarize",
-                        "instruction": "Summarize in 3 bullet points and keep all placeholders.",
+                        "instruction": PROCESS_INSTRUCTION,
                     },
                     timeout=180.0,
                 )
@@ -269,6 +274,7 @@ def evaluate(docs: list[dict], catch_all: str) -> tuple[int, str]:
             })
 
     leakage_count = sum(item["count"] for item in leaks)
+    direct_latencies = _measure_direct_baseline(selected, sanitized_by_id)
     return leakage_count, _render_report(
         docs=docs,
         leakage_count=leakage_count,
@@ -279,7 +285,50 @@ def evaluate(docs: list[dict], catch_all: str) -> tuple[int, str]:
         sanitize_failures=sanitize_failures,
         sanitize_latencies=sanitize_latencies,
         processed=processed,
+        direct_latencies=direct_latencies,
     )
+
+
+def _measure_direct_baseline(
+    selected: list[dict],
+    sanitized_by_id: dict[str, str],
+) -> list[int]:
+    """Time direct provider calls on the same sanitized prompts.
+
+    Used only for the latency comparison in the report; returns ``[]`` when the
+    provider cannot be constructed (for example a remote gateway with no local
+    model), and the report then says the baseline was not measured.
+    """
+
+    try:
+        from app.pipeline.pipeline import _build_messages
+        from app.providers import get_provider
+    except Exception:  # noqa: BLE001 - optional import for offline runs
+        return []
+
+    try:
+        provider = get_provider()
+    except Exception:  # noqa: BLE001 - misconfigured provider
+        return []
+
+    async def timed_calls() -> list[int]:
+        # One event loop for every call: the AsyncOpenAI client keeps
+        # loop-bound connections, so separate asyncio.run() calls fail.
+        latencies: list[int] = []
+        for doc in selected:
+            sanitized = sanitized_by_id.get(doc["id"])
+            if not sanitized:
+                continue
+            messages = _build_messages("summarize", PROCESS_INSTRUCTION, sanitized)
+            started = time.perf_counter()
+            try:
+                await provider.complete(messages, temperature=0.2, max_tokens=512)
+            except Exception:  # noqa: BLE001 - baseline is best-effort
+                return []
+            latencies.append(int((time.perf_counter() - started) * 1000))
+        return latencies
+
+    return asyncio.run(timed_calls())
 
 
 def _render_report(
@@ -293,6 +342,7 @@ def _render_report(
     sanitize_failures: list[str],
     sanitize_latencies: list[int],
     processed: list[dict],
+    direct_latencies: list[int],
 ) -> str:
     detection_rows = []
     precisions: list[float] = []
@@ -371,6 +421,40 @@ def _render_report(
     process_p95 = percentile(process_latencies, 95)
     sanitize_p50 = percentile(sanitize_latencies, 50)
     sanitize_p95 = percentile(sanitize_latencies, 95)
+    direct_p50 = percentile(direct_latencies, 50)
+    direct_p95 = percentile(direct_latencies, 95)
+    overhead_ms = (
+        process_p50 - direct_p50
+        if process_p50 is not None and direct_p50 is not None
+        else None
+    )
+
+    latency_rows = [
+        ["Gateway sanitize (`/v1/sanitize` `duration_ms`)", len(sanitize_latencies),
+         _fmt(sanitize_p50, 1), _fmt(sanitize_p95, 1), "detection + masking only, no LLM"],
+        ["End-to-end `/v1/process` (`latency_ms`)", len(process_latencies),
+         _fmt(process_p50, 1), _fmt(process_p95, 1), "gateway + LLM call + reinsertion"],
+    ]
+    if direct_latencies:
+        latency_rows.append([
+            "Direct provider call (same sanitized prompt, warm)",
+            len(direct_latencies),
+            _fmt(direct_p50, 1),
+            _fmt(direct_p95, 1),
+            "model only, bypasses the gateway",
+        ])
+        latency_note = (
+            f"Gateway overhead at p50: **{_fmt(overhead_ms, 1)} ms** "
+            f"({_fmt((overhead_ms / process_p50 * 100) if process_p50 else None, 1)}% "
+            "of end-to-end latency). The direct calls reuse the sanitized prompts "
+            "and instruction from the process run."
+        )
+    else:
+        latency_note = (
+            "Provider-only latency (a direct call to the model) is not exposed by "
+            "the gateway contract, so gateway overhead versus a direct provider call "
+            "is **not measured** in this run."
+        )
 
     zero_leak = leakage_count == 0
     assertion = (
@@ -444,17 +528,10 @@ Five documents were sent through `POST /v1/process` with task `summarize`.
 
 {_md_table(
     ["Measurement", "n", "p50 ms", "p95 ms", "What it includes"],
-    [
-        ["Gateway sanitize (`/v1/sanitize` `duration_ms`)", len(sanitize_latencies),
-         _fmt(sanitize_p50, 1), _fmt(sanitize_p95, 1), "detection + masking only, no LLM"],
-        ["End-to-end `/v1/process` (`latency_ms`)", len(process_latencies),
-         _fmt(process_p50, 1), _fmt(process_p95, 1), "gateway + LLM call + reinsertion"],
-    ],
+    latency_rows,
 )}
 
-Provider-only latency (a direct call to the model) is not exposed by the gateway
-contract, so gateway overhead versus a direct provider call is **not measured** in
-this run.
+{latency_note}
 
 ## Known limitations
 
