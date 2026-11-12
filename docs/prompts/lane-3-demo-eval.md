@@ -51,6 +51,12 @@ python -m evaluation.run         # requires API on :8000
 
 Do not fabricate metrics. If the API is unavailable, mark the report "blocked on gateway" and report it.
 
+## After lane 2 merges
+
+Rebase on `main`, start the API and Streamlit, run `python -m evaluation.run`,
+confirm the leakage count is 0 and `reports/metrics.md` is generated, then push
+the rebased branch. Do not merge.
+
 ## Finish
 
 Commit on `agent/demo-eval`, push, open a PR against `main`. **Do not merge.** Final message: files changed, dataset stats, test output, sample UI behavior, and what still needs the merged gateway. Stop at 2.5 hours.

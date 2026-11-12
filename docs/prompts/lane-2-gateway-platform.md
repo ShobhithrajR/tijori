@@ -57,7 +57,11 @@ uvicorn app.main:app --port 8000
 curl -s localhost:8000/health
 ```
 
-If lane 1 is merged, run one real `/v1/process` with the PS-02 sample and confirm the outbound payload is sanitized.
+## After lane 1 merges
+
+Rebase on `main`, run one real `/v1/process` with the PS-02 sample against
+Ollama, confirm `outbound_payload` is sanitized and an audit row is written,
+then push the rebased branch. Do not merge.
 
 ## Finish
 

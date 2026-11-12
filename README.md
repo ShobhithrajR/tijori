@@ -55,8 +55,10 @@ make ui         # http://127.0.0.1:8501
 | `agent/gateway-platform` | lane 2 | FastAPI stages, Ollama adapter, SQLite audit |
 | `agent/demo-eval` | lane 3 | Streamlit 3-pane UI, 50-doc dataset, metrics report |
 
-`main` is protected by review: Shreyas merges. Merge order is 1 → 2 → 3. Do not
-edit `CONTRACT.md`, `app/contracts.py`, or another lane's files.
+`main` is protected by review: Shreyas merges. Team is 3 coders (one per lane)
+plus 1 reviewer/merger. Merge order is 1 → 2 → 3. Do not edit `CONTRACT.md`,
+`app/contracts.py`, or another lane's files. Reviewer steps:
+`docs/MERGE-CHECKLIST.md`.
 
 ## 6-hour plan
 
