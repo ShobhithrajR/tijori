@@ -34,11 +34,11 @@ class Settings:
 
 
 def get_api_key() -> str:
-    """Read API key dynamically from environment, falling back to settings.api_key.
+    """Read API key dynamically so an unset variable disables authentication.
 
     Allows tests to toggle API key via monkeypatch.setenv.
     """
-    return os.getenv("TIJORI_API_KEY", settings.api_key)
+    return os.getenv("TIJORI_API_KEY", "")
 
 
 def get_audit_retention_days() -> int:
