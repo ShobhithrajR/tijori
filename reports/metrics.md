@@ -1,9 +1,9 @@
 # Tijori Evaluation Report — blocked on gateway
 
-- Generated: 2026-11-12 08:52:24 UTC
+- Generated: 2026-11-12 09:05:01 UTC
 - Dataset seed: `2026`
 - Dataset: `data\dataset.jsonl`
-- Gateway commit: `9a874fc`
+- Gateway commit: `5b9bbc5`
 - API: `http://127.0.0.1:8000`
 
 ## Status
