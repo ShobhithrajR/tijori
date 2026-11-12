@@ -11,10 +11,7 @@ from streamlit.testing.v1 import AppTest
 
 APP = Path(__file__).resolve().parents[2] / "ui" / "app.py"
 
-DEFAULT_INSTRUCTION = (
-    "Summarize this document in 3 short bullet points.\n"
-    "Do not copy the document. Keep every placeholder like <PERSON_1> exactly as written."
-)
+DEFAULT_INSTRUCTION = "Summarize in 3 bullet points and keep all placeholders."
 CUSTOM_INSTRUCTION = "Extract only the applicant name and PAN. Keep <PERSON_1> exactly."
 AUTH_ERROR = "Gateway rejected the API key (check TIJORI_API_KEY)"
 
@@ -115,7 +112,7 @@ def test_default_instruction_is_sent(monkeypatch):
     app, calls = run_app(monkeypatch)
     assert calls["post"][0]["json"]["instruction"] == DEFAULT_INSTRUCTION
     assert any(
-        caption.value.startswith("Instruction sent: Summarize this document")
+        caption.value.startswith("Instruction sent: Summarize in 3 bullet points")
         for caption in app.caption
     )
 

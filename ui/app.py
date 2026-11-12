@@ -25,10 +25,10 @@ ROOT = Path(__file__).resolve().parents[1]
 DATASET_PATH = ROOT / "data" / "dataset.jsonl"
 DEFAULT_API_URL = os.getenv("TIJORI_API_URL", "http://127.0.0.1:8000")
 DOC_TYPES = ("kyc", "loan_application", "support_ticket", "insurance_claim", "other")
-DEFAULT_INSTRUCTION = (
-    "Summarize this document in 3 short bullet points.\n"
-    "Do not copy the document. Keep every placeholder like <PERSON_1> exactly as written."
-)
+#: Same wording the evaluation harness uses, so the demo matches `reports/metrics.md`.
+#: "Do not copy the document" made qwen2.5:3b drop 9 of 10 placeholders on loan_001
+#: (the model abstracts identifiers away instead of carrying the tokens through).
+DEFAULT_INSTRUCTION = "Summarize in 3 bullet points and keep all placeholders."
 AUTH_ERROR = "Gateway rejected the API key (check TIJORI_API_KEY)"
 
 FALLBACK_SAMPLE = (

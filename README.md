@@ -57,10 +57,16 @@ streamlit run ui/app.py
 
 In the UI, the default sample is `loan_001` (loan application, 462 characters,
 ten entities). Keep the default instruction and click **Run gateway**. Expected:
-the final response is three short bullets and visibly shorter than the input,
-every placeholder is restored to its original value, and the audit tab has one
-row for the request. `reports/metrics.md` records 10/10 replacements for this
-document.
+three bullets, every placeholder restored to its original value (Replaced 10,
+Missing 0), and the audit tab has one row for the request. `reports/metrics.md`
+records 10/10 replacements for this document.
+
+The final text is often about as long as the input, because a faithful summary
+must carry every identifier token back through reinsertion. That is expected.
+The right pane's **Missing** counter is the honest signal: on some documents
+`qwen2.5:3b` drops a placeholder (for example `kyc_002` loses one), and the
+gateway reports it instead of guessing. Change the instruction in the sidebar to
+test a different summarisation style.
 
 Warm latency from `reports/metrics.md`: `/v1/process` p50 ≈ 4.8 s; sanitize-only
 p50 ≈ 0.26 s. Actual numbers depend on hardware. Skipping the pre-warm makes the
