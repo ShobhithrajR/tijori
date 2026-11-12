@@ -30,8 +30,5 @@ class Settings:
     max_input_chars: int = int(_env("TIJORI_MAX_INPUT_CHARS", "100000"))
     log_level: str = _env("TIJORI_LOG_LEVEL", "INFO")
 
-    # Ollama-specific tuning: keep memory low on a 16 GB laptop.
-    ollama_num_ctx: int = int(_env("TIJORI_OLLAMA_NUM_CTX", "4096"))
-
 
 settings = Settings()
