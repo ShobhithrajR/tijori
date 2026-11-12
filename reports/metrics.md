@@ -1,9 +1,9 @@
 # Tijori Evaluation Report
 
-- Generated: 2026-11-12 12:03:05 UTC
+- Generated: 2026-11-12 16:40:59 UTC
 - Dataset seed: `2026`
 - Dataset: `data/dataset.jsonl`
-- Gateway commit: `9c6b166`
+- Gateway commit: `f3ab167`
 - API: `http://127.0.0.1:8000`
 
 ## Summary
@@ -15,7 +15,7 @@
 | Zero-leakage assertion | **PASS — leakage count is 0.** |
 | Macro precision | 0.936 |
 | Macro recall | 0.957 |
-| Reinsertion accuracy (API-reported) | 0.957 |
+| Reinsertion accuracy (API-reported) | 1.000 |
 
 Detection uses exact span + entity-type matching against the gold labels in
 `data/dataset.jsonl` (seed `2026`). Failed sanitize requests are excluded
@@ -69,15 +69,15 @@ Five documents were sent through `POST /v1/process` with task `summarize`.
 
 | Document | Latency ms | API replaced | API missing | API unknown | Confirmed | Dropped | Placeholder left |
 |---|---|---|---|---|---|---|---|
-| loan_001 | 4135 | 1 | 9 | 0 | 1 | 9 | no |
-| loan_005 | 4293 | 2 | 7 | 1 | 2 | 7 | no |
-| kyc_002 | 5627 | 8 | 1 | 0 | 8 | 1 | no |
-| support_003 | 5299 | 6 | 0 | 0 | 6 | 0 | no |
-| insurance_004 | 5822 | 5 | 3 | 0 | 5 | 3 | no |
+| loan_001 | 6327 | 10 | 0 | 0 | 10 | 0 | no |
+| loan_005 | 2733 | 2 | 7 | 0 | 2 | 7 | no |
+| kyc_002 | 4775 | 8 | 1 | 0 | 8 | 1 | no |
+| support_003 | 4593 | 6 | 0 | 0 | 6 | 0 | no |
+| insurance_004 | 5464 | 8 | 0 | 0 | 8 | 0 | no |
 
-- API-reported accuracy: **0.957** (`replaced / (replaced + unknown)`).
-- Locally verified accuracy: **0.957** (confirmed originals / (confirmed + unreplaced + unknown)).
-- Confirmed substitutions: 22; unreplaced placeholders left in `final_text`: 0.
+- API-reported accuracy: **1.000** (`replaced / (replaced + unknown)`).
+- Locally verified accuracy: **1.000** (confirmed originals / (confirmed + unreplaced + unknown)).
+- Confirmed substitutions: 34; unreplaced placeholders left in `final_text`: 0.
 - Dropped placeholders (LLM omitted them) are not counted as failures.
 - Process calls failed: 0.
 
@@ -85,12 +85,11 @@ Five documents were sent through `POST /v1/process` with task `summarize`.
 
 | Measurement | n | p50 ms | p95 ms | What it includes |
 |---|---|---|---|---|
-| Gateway sanitize (`/v1/sanitize` `duration_ms`) | 50 | 241.5 | 303.8 | detection + masking only, no LLM |
-| End-to-end `/v1/process` (`latency_ms`) | 5 | 5299.0 | 5783.0 | gateway + LLM call + reinsertion |
+| Gateway sanitize (`/v1/sanitize` `duration_ms`) | 50 | 256.0 | 295.6 | detection + masking only, no LLM |
+| End-to-end `/v1/process` (`latency_ms`) | 5 | 4775.0 | 6154.4 | gateway + LLM call + reinsertion |
+| Direct provider call (same sanitized prompt, warm) | 5 | 4490.0 | 5963.2 | model only, bypasses the gateway |
 
-Provider-only latency (a direct call to the model) is not exposed by the gateway
-contract, so gateway overhead versus a direct provider call is **not measured** in
-this run.
+Gateway overhead at p50: **285.0 ms** (6.0% of end-to-end latency). The direct calls reuse the sanitized prompts and instruction from the process run.
 
 ## Known limitations
 

@@ -15,7 +15,11 @@ from app.contracts import PLACEHOLDER_RE, PLACEHOLDER_SCAN_RE, PlaceholderEntry,
 # are handled exclusively by PLACEHOLDER_SCAN_RE; malformed ones are never
 # repaired, only reported as unknown.
 _MALFORMED_TOKEN_RE = re.compile(r"<[A-Za-z][A-Za-z0-9_]*[^<>\n]{0,30}>")
-_MALFORMED_UNCLOSED_RE = re.compile(r"<[A-Za-z][A-Za-z0-9_]*[^<>\n]{0,30}$", re.MULTILINE)
+#: Unclosed token anywhere in a line, e.g. "<AADHAAR_1 and ...". The lookahead
+#: stops at whitespace/punctuation so a well-formed "<AADHAAR_1>" never matches.
+_MALFORMED_UNCLOSED_RE = re.compile(
+    r"<[A-Za-z][A-Za-z0-9_]*(?:[\s_-]+\d+)?(?=[\s,.;:)\]]|$)"
+)
 _MALFORMED_CANONICAL_RE = re.compile(r"^<\s*([A-Za-z]+)[\s_ -]*(\d*)[\s_ -]*>?$")
 
 
