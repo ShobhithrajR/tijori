@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any
+
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
 from app.contracts import DetectedEntity, EntityType
 
@@ -109,12 +113,30 @@ def _spacy_hits(text: str) -> list[DetectedEntity]:
 
 
 def entities(text: str) -> list[DetectedEntity]:
-    """Run GLiNER + spaCy NER; GLiNER failure falls back to spaCy."""
-    found: list[DetectedEntity] = []
+    """Run GLiNER + spaCy NER; always union results, dedupe, fail if both fail."""
+    gliner_failed = False
+    spacy_failed = False
+    hits: list[DetectedEntity] = []
+
     try:
-        found.extend(_gliner_hits(text))
+        hits.extend(_gliner_hits(text))
     except Exception:
-        found = []
-    if not found:
-        found.extend(_spacy_hits(text))
-    return found
+        gliner_failed = True
+
+    try:
+        hits.extend(_spacy_hits(text))
+    except Exception:
+        spacy_failed = True
+
+    if gliner_failed and spacy_failed:
+        raise RuntimeError("Both GLiNER and spaCy NER backends failed")
+
+    # Dedupe by (type, start, end), keeping higher score
+    deduped: dict[tuple[EntityType, int, int], DetectedEntity] = {}
+    for hit in hits:
+        key = (hit.type, hit.start, hit.end)
+        existing = deduped.get(key)
+        if existing is None or hit.score > existing.score:
+            deduped[key] = hit
+
+    return list(deduped.values())

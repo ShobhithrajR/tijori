@@ -10,60 +10,59 @@ import time
 
 from app.contracts import DetectionResult, DetectedEntity, ENTITY_PRIORITY, EntityType
 
-from privacy.detection import india, ner
+from privacy.detection import india, ner, patterns
 
 _PRIORITY_INDEX: dict[str, int] = {t.value: i for i, t in enumerate(ENTITY_PRIORITY)}
+
+
+class DetectionError(RuntimeError):
+    """Raised when both detection backends fail."""
 
 
 def _priority(type_value: EntityType) -> int:
     try:
         return _PRIORITY_INDEX[type_value.value]
-    except (KeyError, ValueError):
+    except (KeyError, ValueError, AttributeError):
         return len(ENTITY_PRIORITY)
 
 
-def _wins(challenger: DetectedEntity, incumbent: DetectedEntity) -> bool:
-    """True when ``challenger`` should replace ``incumbent``."""
-    if _priority(challenger.type) != _priority(incumbent.type):
-        return _priority(challenger.type) < _priority(incumbent.type)
-    challenger_len = challenger.end - challenger.start
-    incumbent_len = incumbent.end - incumbent.start
-    return challenger_len > incumbent_len
-
-
 def resolve_overlaps(entities: list[DetectedEntity]) -> list[DetectedEntity]:
-    """Deduplicate and resolve overlaps (higher priority wins, longer span wins ties)."""
-    unique: dict[tuple[str, int, int], DetectedEntity] = {}
-    order: list[tuple[str, int, int]] = []
-    for entity in sorted(entities, key=lambda e: (e.start, -(e.end - e.start))):
-        key = (entity.type.value, entity.start, entity.end)
-        existing = unique.get(key)
-        if existing is None:
-            unique[key] = entity
-            order.append(key)
-        elif entity.score > existing.score:
-            unique[key] = entity
+    """Deduplicate and resolve overlaps deterministically.
 
+    1. Dedupe (type, start, end) keeping highest score.
+    2. Rank by ENTITY_PRIORITY ascending, then longer span, then earlier start.
+    3. Accept each entity only if it does not overlap an already accepted entity.
+    4. Return sorted by start.
+    """
+    if not entities:
+        return []
+
+    # 1. Dedupe (type, start, end) keeping highest score
+    deduped: dict[tuple[str, int, int], DetectedEntity] = {}
+    for entity in entities:
+        key = (
+            entity.type.value if hasattr(entity.type, "value") else str(entity.type),
+            entity.start,
+            entity.end,
+        )
+        existing = deduped.get(key)
+        if existing is None or entity.score > existing.score:
+            deduped[key] = entity
+
+    # 2. Rank by ENTITY_PRIORITY ascending, then longer span, then earlier start
+    def _rank_key(e: DetectedEntity) -> tuple[int, int, int]:
+        return (_priority(e.type), -(e.end - e.start), e.start)
+
+    ranked = sorted(deduped.values(), key=_rank_key)
+
+    # 3. Accept each entity only if it does not overlap an already accepted entity
     accepted: list[DetectedEntity] = []
-    for key in order:
-        candidate = unique[key]
-        overlapping = [a for a in accepted if candidate.start < a.end and a.start < candidate.end]
-        if not overlapping:
+    for candidate in ranked:
+        if not any(candidate.start < a.end and a.start < candidate.end for a in accepted):
             accepted.append(candidate)
-            continue
-        winner = overlapping[0]
-        for other in overlapping[1:]:
-            if _wins(candidate, other):
-                winner = candidate
-            elif _wins(other, winner):
-                winner = other
-        if winner is overlapping[0] and not _wins(candidate, overlapping[0]):
-            # The incumbent already holds the overlap; the challenger loses.
-            continue
-        kept = [a for a in accepted if all(a is not o for o in overlapping)]
-        kept.append(winner)
-        kept.sort(key=lambda e: e.start)
-        accepted = kept
+
+    # 4. Return sorted by start
+    accepted.sort(key=lambda e: (e.start, e.end))
     return accepted
 
 
@@ -71,6 +70,9 @@ def detect(text: str, *, language: str = "auto") -> DetectionResult:
     """Detect PII spans in ``text`` (Presidio + NER), overlaps resolved."""
     started = time.perf_counter()
     found: list[DetectedEntity] = []
+
+    presidio_failed = False
+    ner_failed = False
 
     try:
         for hit in india.recognize(text):
@@ -85,10 +87,19 @@ def detect(text: str, *, language: str = "auto") -> DetectionResult:
                 )
             )
     except Exception:
-        pass
+        presidio_failed = True
 
     try:
         found.extend(ner.entities(text))
+    except Exception:
+        ner_failed = True
+
+    if presidio_failed and ner_failed:
+        raise DetectionError("Both Presidio and NER detection backends failed.")
+
+    # Supplement with pattern/heuristic extractors (address cues, phone, email, etc.)
+    try:
+        found.extend(patterns.extract(text))
     except Exception:
         pass
 

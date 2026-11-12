@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import pytest
+
 from app.contracts import DetectedEntity, EntityType
-from privacy.detection import detect, resolve_overlaps
+from privacy.detection import DetectionError, detect, resolve_overlaps
 
 
 def test_detect_returns_result_shape(sample_text) -> None:
@@ -52,3 +54,66 @@ def test_resolve_overlaps_keeps_longer_span_on_tie() -> None:
     resolved = resolve_overlaps(entities)
     assert len(resolved) == 1
     assert resolved[0].end - resolved[0].start == 20
+
+
+def test_resolve_overlaps_both_orderings_person_and_aadhaar() -> None:
+    person = DetectedEntity(type=EntityType.PERSON, start=0, end=10, text="0123456789", score=0.9, source="gliner")
+    aadhaar = DetectedEntity(type=EntityType.AADHAAR, start=2, end=8, text="234567", score=0.8, source="presidio")
+
+    # Order 1: PERSON first, then AADHAAR
+    resolved_1 = resolve_overlaps([person, aadhaar])
+    assert len(resolved_1) == 1
+    assert resolved_1[0].type == EntityType.AADHAAR
+    assert resolved_1[0].start == 2
+    assert resolved_1[0].end == 8
+
+    # Order 2: AADHAAR first, then PERSON
+    resolved_2 = resolve_overlaps([aadhaar, person])
+    assert len(resolved_2) == 1
+    assert resolved_2[0].type == EntityType.AADHAAR
+    assert resolved_2[0].start == 2
+    assert resolved_2[0].end == 8
+
+
+def test_detect_raises_when_both_backends_fail(monkeypatch) -> None:
+    def _fail_presidio(_text):
+        raise RuntimeError("Presidio crashed")
+
+    def _fail_ner(_text):
+        raise RuntimeError("NER crashed")
+
+    monkeypatch.setattr("privacy.detection.india.recognize", _fail_presidio)
+    monkeypatch.setattr("privacy.detection.ner.entities", _fail_ner)
+
+    with pytest.raises(DetectionError):
+        detect("Some text to analyze")
+
+
+def test_detect_presidio_fails_ner_succeeds(monkeypatch) -> None:
+    def _fail_presidio(_text):
+        raise RuntimeError("Presidio crashed")
+
+    expected = [
+        DetectedEntity(type=EntityType.PERSON, start=0, end=5, text="Rahul", score=0.9, source="gliner")
+    ]
+
+    monkeypatch.setattr("privacy.detection.india.recognize", _fail_presidio)
+    monkeypatch.setattr("privacy.detection.ner.entities", lambda _text: list(expected))
+
+    result = detect("Rahul")
+    assert any(e.type == EntityType.PERSON and e.text == "Rahul" for e in result.entities)
+
+
+def test_detect_ner_fails_presidio_succeeds(monkeypatch) -> None:
+    def _fail_ner(_text):
+        raise RuntimeError("NER crashed")
+
+    expected_hits = [
+        {"type": EntityType.PAN, "start": 0, "end": 10, "score": 0.95, "source": "presidio"}
+    ]
+
+    monkeypatch.setattr("privacy.detection.ner.entities", _fail_ner)
+    monkeypatch.setattr("privacy.detection.india.recognize", lambda _text: list(expected_hits))
+
+    result = detect("ABCDE1234F")
+    assert any(e.type == EntityType.PAN and e.text == "ABCDE1234F" for e in result.entities)
