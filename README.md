@@ -36,6 +36,56 @@ make api        # http://127.0.0.1:8000/docs
 make ui         # http://127.0.0.1:8501
 ```
 
+## Demo runbook (warm path)
+
+Run these in order. Use separate shells where noted.
+
+```bash
+# shell 1 — Ollama server
+ollama serve
+
+# shell 2 — pre-warm the model, then leave it resident for 30 minutes
+OLLAMA_KEEP_ALIVE=30m ollama run qwen2.5:3b "Reply with OK."
+# Windows PowerShell: $env:OLLAMA_KEEP_ALIVE="30m"; ollama run qwen2.5:3b "Reply with OK."
+
+# shell 3 — gateway
+uvicorn app.main:app --port 8000
+
+# shell 4 — UI
+streamlit run ui/app.py
+```
+
+In the UI, the default sample is `loan_001` (loan application, 462 characters,
+ten entities). Keep the default instruction and click **Run gateway**. Expected:
+the final response is three short bullets and visibly shorter than the input,
+every placeholder is restored to its original value, and the audit tab has one
+row for the request. `reports/metrics.md` records 10/10 replacements for this
+document.
+
+Warm latency from `reports/metrics.md`: `/v1/process` p50 ≈ 4.8 s; sanitize-only
+p50 ≈ 0.26 s. Actual numbers depend on hardware. Skipping the pre-warm makes the
+first request much slower.
+
+### Auth enabled
+
+The gateway reads `TIJORI_API_KEY` at startup. Unset or empty means auth is
+disabled (the dev default). Export the key in each shell that starts uvicorn or
+Streamlit (or export it once in a parent shell before starting either):
+
+```bash
+# shell 1
+export TIJORI_API_KEY='...'
+uvicorn app.main:app --port 8000
+
+# shell 2
+export TIJORI_API_KEY='...'
+streamlit run ui/app.py
+```
+
+`/health` stays unauthenticated. The UI sends `X-API-Key` on `/v1/process` and
+`/v1/audit`; a 401 shows "Gateway rejected the API key (check TIJORI_API_KEY)".
+Never paste the key into the UI or commit it.
+
 ## Where things live
 
 | Path | What |
